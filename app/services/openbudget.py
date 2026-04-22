@@ -1,15 +1,14 @@
 """
-OpenBudget.uz API integration.
-Handles captcha solving via 2captcha, OTP sending and verification.
+OpenBudget.uz API integration with fallback to local vote storage.
 """
 import asyncio
 import aiohttp
 from loguru import logger
 
-
 CAPTCHA_URL    = "https://openbudget.uz/api/v2/vote/captcha-2"
 SEND_OTP_URL   = "https://openbudget.uz/api/v1/login/send-otp"
 VERIFY_OTP_URL = "https://openbudget.uz/api/v1/login/verify-otp"
+VOTE_URL       = "https://openbudget.uz/api/v1/initiatives/{initiative_id}/vote"
 
 HEADERS = {
     "Content-Type": "application/json",
@@ -24,34 +23,36 @@ class OpenBudgetError(Exception):
     pass
 
 
+async def check_api_available() -> bool:
+    """Check if openbudget.uz API is available."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                CAPTCHA_URL, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=5)
+            ) as resp:
+                return resp.status == 200
+    except Exception:
+        return False
+
+
 async def get_captcha() -> dict:
-    """Fetch captcha image and key from openbudget.uz"""
     async with aiohttp.ClientSession() as session:
-        async with session.get(CAPTCHA_URL, headers=HEADERS) as resp:
+        async with session.get(
+            CAPTCHA_URL, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=10)
+        ) as resp:
             if resp.status != 200:
                 raise OpenBudgetError(f"Captcha olishda xato: {resp.status}")
             data = await resp.json()
-            return {
-                "key": data["captchaKey"],
-                "image_b64": data["image"],
-            }
+            return {"key": data["captchaKey"], "image_b64": data["image"]}
 
 
 async def solve_captcha_2captcha(api_key: str, image_b64: str) -> str:
-    """Send base64 image to 2captcha and get math answer."""
     if "," in image_b64:
         image_b64 = image_b64.split(",", 1)[1]
-
     async with aiohttp.ClientSession() as session:
         submit_data = {
-            "key": api_key,
-            "method": "base64",
-            "body": image_b64,
-            "json": 1,
-            "numeric": 1,
-            "calc": 1,
-            "min_len": 1,
-            "max_len": 3,
+            "key": api_key, "method": "base64", "body": image_b64,
+            "json": 1, "numeric": 1, "calc": 1, "min_len": 1, "max_len": 3,
         }
         async with session.post("https://2captcha.com/in.php", data=submit_data) as resp:
             result = await resp.json()
@@ -68,12 +69,10 @@ async def solve_captcha_2captcha(api_key: str, image_b64: str) -> str:
                     return res["request"]
                 if res.get("request") == "ERROR_CAPTCHA_UNSOLVABLE":
                     raise OpenBudgetError("Captcha hal qilib bolmadi")
-
     raise OpenBudgetError("2captcha timeout")
 
 
 async def send_otp(phone: str, captcha_key: str, captcha_result: str) -> str:
-    """Send OTP SMS. Returns otpKey."""
     phone = phone.replace("+", "").replace(" ", "").replace("-", "")
     payload = {
         "captcha_key": captcha_key,
@@ -92,18 +91,9 @@ async def send_otp(phone: str, captcha_key: str, captcha_result: str) -> str:
 
 
 async def verify_otp(phone: str, otp_key: str, otp_code: str) -> dict:
-    """Verify OTP code. Returns user data with access_token."""
     phone = phone.replace("+", "").replace(" ", "").replace("-", "")
-    if phone.startswith("998") and len(phone) == 12:
-        phone_short = phone[3:]
-    else:
-        phone_short = phone
-
-    payload = {
-        "otp_code": otp_code,
-        "otp_key": otp_key,
-        "phone_number": phone_short,
-    }
+    phone_short = phone[3:] if phone.startswith("998") and len(phone) == 12 else phone
+    payload = {"otp_code": otp_code, "otp_key": otp_key, "phone_number": phone_short}
     async with aiohttp.ClientSession() as session:
         async with session.post(VERIFY_OTP_URL, json=payload, headers=HEADERS) as resp:
             data = await resp.json()
@@ -114,10 +104,23 @@ async def verify_otp(phone: str, otp_key: str, otp_code: str) -> dict:
             return data
 
 
+async def cast_vote(access_token: str, initiative_id: str) -> bool:
+    """Cast vote on openbudget.uz after successful OTP verification."""
+    url = VOTE_URL.format(initiative_id=initiative_id)
+    headers = {**HEADERS, "Authorization": f"Bearer {access_token}"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers) as resp:
+                logger.info(f"Vote cast status: {resp.status}")
+                return resp.status in (200, 201)
+    except Exception as e:
+        logger.error(f"Vote cast error: {e}")
+        return False
+
+
 async def solve_and_send_otp(phone: str, captcha_api_key: str) -> str:
-    """Full flow: get captcha, solve, send OTP. Returns otpKey."""
     captcha = await get_captcha()
-    answer = await solve_captcha_2captcha(captcha_api_key, captcha["image_b64"])
+    answer  = await solve_captcha_2captcha(captcha_api_key, captcha["image_b64"])
     otp_key = await send_otp(phone, captcha["key"], answer)
     logger.info(f"OTP sent to {phone}")
     return otp_key

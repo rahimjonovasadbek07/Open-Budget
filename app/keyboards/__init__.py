@@ -87,6 +87,7 @@ def admin_settings_kb() -> InlineKeyboardMarkup:
         ("📞 Aloqa matni",            "adm_edit_support_username"),
         ("📍 Manzil matni",           "adm_edit_address_text"),
         ("🗺 Google Maps URL",        "adm_edit_maps_url"),
+        ("🗳 Openbudget Initiative ID", "adm_edit_initiative_id"),
         ("🔛 Yechishni on/off",       "adm_toggle_withdraw"),
         ("🗳 Ovozni on/off",          "adm_toggle_vote"),
     ]
