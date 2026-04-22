@@ -2,18 +2,16 @@ from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
+from aiogram.types import Message, CallbackQuery
 from loguru import logger
 
-from app.keyboards import main_menu_kb, withdraw_confirm_kb, cancel_kb
+from app.keyboards import (
+    main_menu_kb, vote_kb, withdraw_confirm_kb, cancel_kb
+)
 from database import repository
 
 router = Router(name="user")
 
-
-class VoteStates(StatesGroup):
-    waiting_name  = State()
-    waiting_phone = State()
 
 class WithdrawStates(StatesGroup):
     waiting_amount = State()
@@ -43,6 +41,10 @@ async def register_user(tg_user, referrer_id=None):
     return record, is_new
 
 
+async def fmt_sum(amount: int) -> str:
+    return f"{amount:,}".replace(",", " ") + " so'm"
+
+
 # ── /start ─────────────────────────────────────────────────────────────────────
 
 @router.message(CommandStart())
@@ -66,17 +68,20 @@ async def cmd_start(message: Message, bot: Bot):
         "🔗 Odam chaqirganiz uchun <b>{ref_bonus} so'm</b> beriladi"
     )
     welcome = welcome_tpl.replace("{vote_bonus}", vote_bonus).replace("{ref_bonus}", ref_bonus)
+
     name = message.from_user.first_name
     text = f"{name} 👋 {welcome}"
 
     if is_new and referrer_id:
         try:
-            await bot.send_message(
-                referrer_id,
-                f"🎉 Siz orqali <b>{name}</b> qo'shildi!\n"
-                f"💰 Hisobingizga <b>{ref_bonus} so'm</b> qo'shildi!",
-                parse_mode="HTML"
-            )
+            ref_user = await repository.get_user(referrer_id)
+            if ref_user:
+                await bot.send_message(
+                    referrer_id,
+                    f"🎉 Siz orqali <b>{name}</b> qo'shildi!\n"
+                    f"💰 Hisobingizga <b>{ref_bonus} so'm</b> qo'shildi!",
+                    parse_mode="HTML"
+                )
         except Exception:
             pass
 
@@ -86,109 +91,34 @@ async def cmd_start(message: Message, bot: Bot):
 # ── OVOZ BERISH ────────────────────────────────────────────────────────────────
 
 @router.message(F.text == "🗳 Ovoz berish")
-async def btn_vote(message: Message, state: FSMContext):
+async def btn_vote(message: Message):
     vote_enabled = await repository.get_setting("vote_enabled") or "true"
     if vote_enabled.lower() != "true":
         await message.answer("⏸ Ovoz berish hozircha to'xtatilgan.")
         return
 
-    # Check if already voted
-    existing_vote = await repository.get_vote(message.from_user.id)
-    if existing_vote:
-        vote_bonus = await repository.get_setting("vote_bonus") or "30000"
-        await message.answer(
-            f"✅ <b>Siz allaqachon ovoz bergansiz!</b>\n\n"
-            f"👤 Ism: {existing_vote['full_name']}\n"
-            f"📱 Telefon: {existing_vote['phone']}\n"
-            f"💰 Bonus: {int(vote_bonus):,} so'm olindingiz",
-            parse_mode="HTML"
-        )
-        return
-
-    await state.set_state(VoteStates.waiting_name)
+    vote_url   = await repository.get_setting("vote_url")   or "https://openbudget.uz"
     vote_bonus = await repository.get_setting("vote_bonus") or "30000"
-    await message.answer(
+
+    text = (
         f"🗳 <b>Ovoz berish</b>\n\n"
-        f"💰 Ovoz berganingiz uchun <b>{int(vote_bonus):,} so'm</b> olasiz!\n\n"
-        f"📝 Avval to'liq ismingizni kiriting:\n"
-        f"<i>(Masalan: Rahimjonov Asadbek Ilhomovich)</i>",
-        parse_mode="HTML",
-        reply_markup=cancel_kb()
+        f"Rasmiy saytda ovoz bering va <b>{vote_bonus} so'm</b> oling!\n\n"
+        f"⚠️ Ovoz berganingizdan so'ng '✅ Ovoz berdim' tugmasini bosing."
     )
+    await message.answer(text, parse_mode="HTML", reply_markup=vote_kb(vote_url))
 
 
-@router.message(VoteStates.waiting_name)
-async def process_vote_name(message: Message, state: FSMContext):
-    name = message.text.strip() if message.text else ""
-    if len(name) < 5:
-        await message.answer("❌ Ism juda qisqa! To'liq ism-sharifingizni kiriting.")
-        return
-    if any(char.isdigit() for char in name):
-        await message.answer("❌ Ismda raqam bo'lmasligi kerak!")
-        return
-
-    await state.update_data(full_name=name)
-    await state.set_state(VoteStates.waiting_phone)
-    await message.answer(
-        f"✅ Ism saqlandi: <b>{name}</b>\n\n"
-        f"📱 Endi telefon raqamingizni kiriting:\n"
-        f"<i>(Masalan: +998901234567)</i>",
-        parse_mode="HTML",
-        reply_markup=cancel_kb()
+@router.callback_query(F.data == "voted_confirm")
+async def cb_voted(call: CallbackQuery):
+    vote_bonus = int(await repository.get_setting("vote_bonus") or "30000")
+    new_balance = await repository.add_balance(call.from_user.id, vote_bonus)
+    await call.message.edit_text(
+        f"✅ <b>Rahmat!</b> Ovoz uchun hisobingizga "
+        f"<b>{vote_bonus:,} so'm</b> qo'shildi!\n\n"
+        f"💰 Joriy balans: <b>{new_balance:,} so'm</b>",
+        parse_mode="HTML"
     )
-
-
-@router.message(VoteStates.waiting_phone)
-async def process_vote_phone(message: Message, state: FSMContext, bot: Bot):
-    phone = message.text.strip() if message.text else ""
-    # Clean phone number
-    clean = phone.replace("+", "").replace(" ", "").replace("-", "")
-    if not clean.isdigit() or len(clean) < 9:
-        await message.answer(
-            "❌ Noto'g'ri telefon raqam!\n"
-            "Masalan: +998901234567 yoki 998901234567"
-        )
-        return
-
-    data      = await state.get_data()
-    full_name = data["full_name"]
-
-    # Save vote
-    await repository.create_vote(message.from_user.id, full_name, phone)
-
-    # Add bonus
-    vote_bonus  = int(await repository.get_setting("vote_bonus") or "30000")
-    new_balance = await repository.add_balance(message.from_user.id, vote_bonus)
-
-    await state.clear()
-
-    await message.answer(
-        f"🎉 <b>Ovozingiz qabul qilindi!</b>\n\n"
-        f"👤 Ism: <b>{full_name}</b>\n"
-        f"📱 Telefon: <b>{phone}</b>\n\n"
-        f"💰 Hisobingizga <b>{vote_bonus:,} so'm</b> qo'shildi!\n"
-        f"💵 Joriy balans: <b>{new_balance:,} so'm</b>",
-        parse_mode="HTML",
-        reply_markup=main_menu_kb()
-    )
-
-    # Notify admins
-    from config import settings
-    votes_count = await repository.get_votes_count()
-    for admin_id in settings.admin_ids_list:
-        try:
-            uname = f"@{message.from_user.username}" if message.from_user.username else f"ID:{message.from_user.id}"
-            await bot.send_message(
-                admin_id,
-                f"🗳 <b>Yangi ovoz!</b>\n\n"
-                f"👤 {full_name}\n"
-                f"📱 {phone}\n"
-                f"🔗 {uname}\n"
-                f"📊 Jami ovozlar: <b>{votes_count}</b>",
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
+    await call.answer("✅ Bonus qo'shildi!")
 
 
 # ── BALANS ─────────────────────────────────────────────────────────────────────
@@ -202,17 +132,13 @@ async def btn_balance(message: Message, bot: Bot):
     ref_count = await repository.get_referral_count(message.from_user.id)
     bot_info  = await bot.get_me()
     ref_link  = f"https://t.me/{bot_info.username}?start={message.from_user.id}"
-    min_w     = await repository.get_setting("min_withdraw") or "50000"
-
-    voted     = await repository.get_vote(message.from_user.id)
-    vote_status = "✅ Ovoz bergan" if voted else "❌ Hali ovoz bermagan"
+    min_w = await repository.get_setting("min_withdraw") or "50000"
 
     text = (
         f"💰 <b>Balans ma'lumotlari</b>\n\n"
         f"👤 Ism: {user['first_name']}\n"
         f"💵 Balans: <b>{user['balance']:,} so'm</b>\n"
-        f"👥 Referallar: <b>{ref_count} ta</b>\n"
-        f"🗳 Ovoz: {vote_status}\n\n"
+        f"👥 Referallar: <b>{ref_count} ta</b>\n\n"
         f"🔗 Sizning havolangiz:\n<code>{ref_link}</code>\n\n"
         f"💡 Minimal yechish: {int(min_w):,} so'm"
     )
@@ -258,7 +184,7 @@ async def btn_withdraw(message: Message, state: FSMContext):
 async def process_withdraw_amount(message: Message, state: FSMContext):
     try:
         amount = int(message.text.replace(" ", "").replace(",", ""))
-    except (ValueError, AttributeError):
+    except ValueError:
         await message.answer("❌ Faqat raqam kiriting!")
         return
 
@@ -275,22 +201,22 @@ async def process_withdraw_amount(message: Message, state: FSMContext):
     await state.update_data(amount=amount)
     await state.set_state(WithdrawStates.waiting_card)
     await message.answer(
-        f"💳 Karta raqamingizni kiriting:\n"
-        f"<i>(16 ta raqam, masalan: 8600123456789012)</i>",
-        parse_mode="HTML",
+        f"💳 Karta raqamingizni kiriting:\n(16 ta raqam, masalan: 8600 1234 5678 9012)",
         reply_markup=cancel_kb()
     )
 
 
 @router.message(WithdrawStates.waiting_card)
 async def process_withdraw_card(message: Message, state: FSMContext):
-    card = message.text.replace(" ", "") if message.text else ""
+    card = message.text.replace(" ", "")
     if not card.isdigit() or len(card) < 16:
         await message.answer("❌ Noto'g'ri karta raqami! 16 ta raqam kiriting.")
         return
 
-    data    = await state.get_data()
-    amount  = data["amount"]
+    data   = await state.get_data()
+    amount = data["amount"]
+
+    # Deduct balance and create ticket
     success = await repository.deduct_balance(message.from_user.id, amount)
     if not success:
         await state.clear()
@@ -331,7 +257,7 @@ async def btn_referral(message: Message, bot: Bot):
         f"🔗 <b>Sizning referal havolangiz</b>\n\n"
         f"<code>{ref_link}</code>\n\n"
         f"👥 Taklif qilganlar: <b>{ref_count} ta</b>\n"
-        f"💰 Har bir odam uchun: <b>{int(ref_bonus):,} so'm</b>\n\n"
+        f"💰 Har bir odam uchun: <b>{ref_bonus} so'm</b>\n\n"
         f"💡 Havolani do'stlaringizga yuboring!"
     )
     await message.answer(text, parse_mode="HTML")
@@ -341,17 +267,20 @@ async def btn_referral(message: Message, bot: Bot):
 
 @router.message(F.text == "🏆 TOP 10")
 async def btn_top(message: Message):
-    top    = await repository.get_top_referrers(10)
-    medals = ["🥇","🥈","🥉"] + ["🏅"]*7
+    top = await repository.get_top_referrers(10)
+    medals = ["🥇", "🥈", "🥉"] + ["🏅"] * 7
     lines  = ["🏆 <b>TOP 10 referalchilar</b>\n"]
+
     for i, row in enumerate(top):
         if row["ref_count"] == 0:
             continue
-        name  = row["first_name"] or "Nomsiz"
+        name = row["first_name"] or "Nomsiz"
         uname = f"@{row['username']}" if row["username"] else f"ID:{row['telegram_id']}"
         lines.append(f"{medals[i]} {name} ({uname}) — <b>{row['ref_count']} ta</b>")
+
     if len(lines) == 1:
         lines.append("Hali referallar yo'q.")
+
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
@@ -363,17 +292,19 @@ async def btn_my_tickets(message: Message):
     if not tickets:
         await message.answer("🎫 Sizda hali ticket yo'q.")
         return
+
     status_emoji = {"pending": "⏳", "approved": "✅", "rejected": "❌"}
     lines = ["🎫 <b>Sizning ticketlaringiz</b>\n"]
     for t in tickets:
         emoji  = status_emoji.get(t["status"], "❓")
         date   = t["created_at"].strftime("%d.%m.%Y %H:%M")
-        card   = t["card_number"] or ""
-        masked = f"{card[:4]} **** **** {card[-4:]}" if len(card) >= 8 else card
+        card   = t["card_number"]
+        masked = f"{card[:4]} **** **** {card[-4:]}" if card and len(card) >= 8 else card
         lines.append(
             f"{emoji} <b>#{t['id']}</b> — {t['amount']:,} so'm\n"
             f"   💳 {masked} | 📅 {date}"
         )
+
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 

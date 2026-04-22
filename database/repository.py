@@ -143,30 +143,3 @@ async def get_all_settings() -> dict[str, str]:
     pool = await get_pool()
     rows = await pool.fetch("SELECT key, value FROM settings ORDER BY key")
     return {r["key"]: r["value"] for r in rows}
-
-
-# ── VOTES ──────────────────────────────────────────────────────────────────────
-
-async def get_vote(user_id: int):
-    pool = await get_pool()
-    return await pool.fetchrow("SELECT * FROM votes WHERE user_id=$1", user_id)
-
-async def create_vote(user_id: int, full_name: str, phone: str):
-    pool = await get_pool()
-    return await pool.fetchrow(
-        "INSERT INTO votes (user_id, full_name, phone) VALUES ($1,$2,$3) "
-        "ON CONFLICT (user_id) DO UPDATE SET full_name=$2, phone=$3 RETURNING *",
-        user_id, full_name, phone
-    )
-
-async def get_all_votes(limit: int = 100) -> list:
-    pool = await get_pool()
-    return await pool.fetch(
-        "SELECT v.*, u.username FROM votes v "
-        "JOIN users u ON u.telegram_id = v.user_id "
-        "ORDER BY v.created_at DESC LIMIT $1", limit
-    )
-
-async def get_votes_count() -> int:
-    pool = await get_pool()
-    return await pool.fetchval("SELECT COUNT(*) FROM votes")

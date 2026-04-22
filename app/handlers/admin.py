@@ -357,33 +357,3 @@ async def cmd_add_balance(message: Message):
 async def cmd_cancel(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("❌ Bekor qilindi.")
-
-
-# ── OVOZLAR RO'YXATI ───────────────────────────────────────────────────────────
-
-@router.callback_query(F.data == "adm_votes")
-async def cb_votes(call: CallbackQuery):
-    if not is_admin(call.from_user.id):
-        await call.answer("⛔️", show_alert=True); return
-    votes = await repository.get_all_votes(50)
-    count = await repository.get_votes_count()
-    if not votes:
-        await call.message.edit_text("🗳 Hali ovoz yo'q.", reply_markup=admin_menu_kb())
-        await call.answer(); return
-
-    lines = [f"🗳 <b>Ovozlar ro'yxati ({count} ta)</b>\n"]
-    for i, v in enumerate(votes[:30], 1):
-        uname = f"@{v['username']}" if v["username"] else f"ID:{v['user_id']}"
-        date  = v["created_at"].strftime("%d.%m %H:%M")
-        lines.append(f"{i}. <b>{v['full_name']}</b> | {v['phone']} | {uname} | {date}")
-
-    if count > 30:
-        lines.append(f"\n... va yana {count - 30} ta")
-
-    text = "\n".join(lines)
-    # Split if too long
-    if len(text) > 4000:
-        text = text[:4000] + "\n..."
-
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=admin_menu_kb())
-    await call.answer()
