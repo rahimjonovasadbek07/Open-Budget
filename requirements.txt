@@ -5,3 +5,4 @@ loguru>=0.7
 cachetools>=5.3
 pydantic>=2.4,<2.10
 pydantic-settings>=2.5
+aiohttp>=3.9

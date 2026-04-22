@@ -10,11 +10,13 @@ from loguru import logger
 from app import setup_routers, RateLimitMiddleware, setup_logging
 from config import settings
 from database import create_pool, close_pool, run_migrations
+from database.migrations import add_otp_sessions_table
 
 
 async def on_startup(bot: Bot):
     pool = await create_pool()
     await run_migrations(pool)
+    await add_otp_sessions_table(pool)
     info = await bot.get_me()
     logger.info(f"🤖 @{info.username} started | Admins: {settings.admin_ids_list}")
     if settings.use_webhook:
