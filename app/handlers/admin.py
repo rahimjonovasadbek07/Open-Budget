@@ -261,6 +261,7 @@ SETTING_MAP = {
     "adm_edit_support_username":  ("support_username",  "Yordam username (@bilan)"),
     "adm_edit_address_text":      ("address_text",      "Manzil matni"),
     "adm_edit_maps_url":          ("maps_url",          "Google Maps URL"),
+    "adm_edit_initiative_id":  ("initiative_id", "Openbudget Initiative ID"),
 }
 
 
